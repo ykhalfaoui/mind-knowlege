@@ -1,84 +1,121 @@
-# Mind-Knowledge — Tech Monitoring & Architecture Intelligence
+# LIA — Tech Monitoring & Architecture Intelligence
 
-## What this project does
+## Vision
 
-A CLI pipeline that turns raw articles and YouTube videos into a structured,
-queryable knowledge base — then uses that knowledge as grounded context
-when Claude answers architecture questions.
+A collaborator shares an interesting article or video in a Telegram channel.
+LIA ingests it, decides if it's worth processing, does deep research, generates
+a complete educational course, stores the knowledge, and uses it to answer
+architecture questions with grounded, evidence-based recommendations.
+
+## Full Pipeline
 
 ```
-[Article / Video URL]
-       │
-       ▼
-  src/ingestion.py       ← extract text content
-       │
-       ▼
-  src/classifier.py      ← Claude: domain, tags, summary, qualification scores
-       │
-       ▼
-  src/researcher.py      ← Claude: deep research, trade-offs, arch recommendations
-       │
-       ▼
-  knowledge/knowledge.db ← SQLite knowledge base
-       │
-       ▼
-  src/competencies.py    ← Claude answers architecture questions using the KB as context
+[Telegram Channel]
+      | URL shared by a collaborator
+      v
+ [src/bot.py]              listen for URLs
+      |
+      v
+ [src/ingestion.py]        extract text (article) or transcript (YouTube)
+      |
+      v
+ [src/classifier.py]       Claude: domain / tags / summary / qualification scores
+      |
+      v
+ [Relevance Gate]          relevance_score >= RELEVANCE_THRESHOLD (default 6/10)
+      |                    if below -> notify "not relevant" and stop
+      |
+      v
+ [src/researcher.py]       Claude: deep research, trade-offs, arch recommendations
+      |
+      v
+ [src/knowledge_base.py]   SQLite: structured storage
+      |
+      v
+ [src/course_generator.py] Claude: full Markdown article with code examples
+      |
+      v
+ [src/articles_store.py]   articles/<slug>.md (ready to publish)
+      |
+      v
+ [src/rag.py]              ChromaDB: semantic vector index
+      |
+      v
+ [src/competencies.py]     Claude answers architecture questions using KB as context
 ```
 
 ## Setup
 
 ```bash
 pip install -r requirements.txt
-export ANTHROPIC_API_KEY=sk-...
+cp .env.example .env
+# Fill in ANTHROPIC_API_KEY and TELEGRAM_TOKEN
 ```
 
-## CLI Usage
+## CLI
 
 ```bash
-# Ingest an article (classify + deep research)
-python main.py ingest https://example.com/some-tech-article
+# Start the Telegram bot
+python main.py bot
 
-# Ingest a YouTube video (transcript extraction)
-python main.py ingest https://youtube.com/watch?v=... --video
+# Ingest manually (full pipeline)
+python main.py ingest https://example.com/article
+python main.py ingest https://youtu.be/xxx --video
+python main.py ingest https://example.com/article --no-research --no-course
 
-# Ingest without deep research (faster)
-python main.py ingest https://example.com/article --no-research
+# Architecture query (grounded in KB)
+python main.py query "Should I use GraphQL or REST for a mobile app?"
+python main.py query "Best ML model serving strategy?" --domain AI/ML
 
-# Ask an architecture question grounded in the knowledge base
-python main.py query "Should I use Kafka or RabbitMQ for event streaming?"
+# Compare two technologies
+python main.py compare Kafka RabbitMQ --context high throughput event streaming
+python main.py compare PostgreSQL MongoDB --context user profile storage
 
-# Filter context by domain
-python main.py query "Best approach for ML model serving?" --domain AI/ML
-
-# List all knowledge entries
+# Browse knowledge
 python main.py list
-
-# Search the knowledge base
 python main.py search "vector database"
+python main.py articles
 ```
 
-## Knowledge Schema
+## Telegram Bot Commands
 
-Each entry stored in SQLite contains:
+In any chat where the bot is present:
+
+- Share a URL → triggers the full pipeline automatically
+- `/compare Kafka vs RabbitMQ for high throughput` → comparison
+- `/query Should I use microservices?` → architecture question
+- `/list` → last 10 KB entries
+- `/search vector database` → search the KB
+
+## Knowledge Schema (SQLite)
 
 | Field | Description |
 |---|---|
-| `domain` | Primary tech domain (AI/ML, DevOps, Security…) |
-| `subdomain` | Specific area within domain |
+| `domain` | Primary tech domain |
+| `subdomain` | Specific area |
 | `tags` | 4-8 descriptive tags |
 | `summary` | 2-3 sentence summary |
 | `key_insights` | 3-5 actionable insights |
-| `qualification` | Scores: relevance, novelty, depth, actionability (1-10) |
-| `recommended_for` | Scenarios that benefit most |
-| `deep_research` | Trade-offs, patterns, recommendations, anti-patterns |
+| `qualification` | Scores 1-10: relevance, novelty, depth, actionability |
+| `recommended_for` | Target scenarios |
+| `deep_research` | Trade-offs, patterns, anti-patterns, arch recommendations |
 
-## Model
+## Generated Articles
 
-All Claude calls use `claude-sonnet-4-6`. Change in `config.py`.
+Each article saved in `articles/<domain>-<timestamp>.md` with this structure:
+- TL;DR
+- Why it matters
+- Core Concepts
+- How it works
+- Code Examples (2+)
+- Architecture Patterns
+- Trade-offs table
+- When to use / When NOT to use
+- Key Takeaways
 
 ## Extending
 
-- **New input channels**: add extractors in `src/ingestion.py`
-- **API server**: wrap `main.py` commands in FastAPI endpoints
-- **Telegram bot**: hook `cmd_ingest` to a bot message handler
-- **Vector search**: replace SQLite LIKE search with embeddings (e.g. ChromaDB)
+- **Publish to site**: add a publisher in `src/publisher.py` that pushes `articles/*.md` to GitHub Pages, Ghost, or Notion
+- **Slack/Discord**: replace `src/bot.py` with a Slack bolt or Discord bot
+- **Richer embeddings**: swap ChromaDB default for `text-embedding-3-small` via OpenAI, or use Cohere
+- **Scheduled digests**: cron that calls `python main.py list` and posts weekly summary to Telegram

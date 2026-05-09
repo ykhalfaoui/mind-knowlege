@@ -8,7 +8,8 @@ from src.knowledge_base import init_db, save_entry, search_entries
 from src.ingestion import ingest
 from src.classifier import classify
 from src.researcher import deep_research
-from src.competencies import query
+from src.competencies import query, compare
+from src.articles_store import list_articles
 
 
 def cmd_ingest(args):
@@ -19,31 +20,56 @@ def cmd_ingest(args):
 
     print("  classifying...")
     classification = classify(content)
-    print(f"  domain    : {classification.get('domain')} / {classification.get('subdomain')}")
-    print(f"  tags      : {', '.join(classification.get('tags', []))}")
+    domain = classification.get("domain")
+    tags = ", ".join(classification.get("tags", []))
     qual = classification.get("qualification", {})
-    print(
-        f"  scores    : relevance={qual.get('relevance_score')} "
-        f"novelty={qual.get('novelty_score')} "
-        f"depth={qual.get('depth_score')} "
-        f"action={qual.get('actionability_score')}"
-    )
+    relevance = qual.get("relevance_score", "?")
+    print(f"  domain    : {domain} / {classification.get('subdomain')}")
+    print(f"  tags      : {tags}")
+    print(f"  scores    : relevance={relevance} novelty={qual.get('novelty_score')} "
+          f"depth={qual.get('depth_score')} action={qual.get('actionability_score')}")
+
+    from config import RELEVANCE_THRESHOLD
+    if isinstance(relevance, int) and relevance < RELEVANCE_THRESHOLD:
+        print(f"  [skip] relevance {relevance} < threshold {RELEVANCE_THRESHOLD}")
+        return
 
     research = {}
     if not args.no_research:
         print("  deep researching...")
-        research = deep_research({**classification, "key_insights": classification.get("key_insights", [])})
+        research = deep_research({**classification})
 
     entry_id = save_entry(content, classification, research)
-    print(f"  saved     : {entry_id}")
+    print(f"  saved KB  : {entry_id}")
+
+    if not args.no_course:
+        from src.course_generator import generate_course
+        from src.articles_store import save_article
+        print("  generating course article...")
+        md = generate_course(content, classification, research)
+        slug = save_article(md, classification)
+        print(f"  article   : articles/{slug}.md")
+
+    try:
+        from src.rag import add_to_index
+        add_to_index(entry_id, content, classification, research)
+        print("  indexed   : RAG")
+    except Exception:
+        pass
+
     print(f"  summary   : {classification.get('summary', '')[:240]}")
 
 
 def cmd_query(args):
     question = " ".join(args.question)
     print(f"[query] {question}\n")
-    answer = query(question, domain=args.domain)
-    print(answer)
+    print(query(question, domain=args.domain))
+
+
+def cmd_compare(args):
+    ctx = " ".join(args.context) if args.context else ""
+    print(f"[compare] {args.a} vs {args.b}" + (f" for: {ctx}" if ctx else "") + "\n")
+    print(compare(args.a, args.b, ctx))
 
 
 def cmd_list(args):
@@ -55,11 +81,20 @@ def cmd_list(args):
     for e in entries:
         qual = json.loads(e.get("qualification") or "{}")
         tags = json.loads(e.get("tags") or "[]")
-        r = qual.get("relevance_score", "?")
         print(f"  [{e['domain']:20}] {e['title'][:60]}")
-        print(f"    relevance={r}/10  tags={', '.join(tags[:4])}")
+        print(f"    relevance={qual.get('relevance_score', '?')}/10  tags={', '.join(tags[:4])}")
         print(f"    {e['source_url']}")
         print()
+
+
+def cmd_articles(args):
+    articles = list_articles()
+    if not articles:
+        print("No articles generated yet. Run: python main.py ingest <url>")
+        return
+    print(f"Generated Articles — {len(articles)} files\n")
+    for a in articles:
+        print(f"  {a['path']}  ({a['size']} bytes)")
 
 
 def cmd_search(args):
@@ -72,32 +107,54 @@ def cmd_search(args):
         print()
 
 
+def cmd_bot(_args):
+    from src.bot import run_bot
+    run_bot()
+
+
 def main():
     init_db()
     parser = argparse.ArgumentParser(
-        prog="mind-knowledge",
-        description="Tech monitoring & architecture intelligence powered by Claude",
+        prog="lia",
+        description="LIA — Tech monitoring & architecture intelligence",
     )
     sub = parser.add_subparsers(dest="command", required=True)
 
     p = sub.add_parser("ingest", help="Ingest an article or YouTube video")
-    p.add_argument("url", help="URL to ingest")
-    p.add_argument("--video", action="store_true", help="Force YouTube transcript extraction")
-    p.add_argument("--no-research", action="store_true", help="Skip deep research step")
+    p.add_argument("url")
+    p.add_argument("--video", action="store_true", help="Force YouTube transcript")
+    p.add_argument("--no-research", action="store_true", help="Skip deep research")
+    p.add_argument("--no-course", action="store_true", help="Skip course generation")
 
-    p = sub.add_parser("query", help="Ask an architecture question using the knowledge base")
+    p = sub.add_parser("query", help="Architecture question answered from the knowledge base")
     p.add_argument("question", nargs="+")
     p.add_argument("--domain", help="Filter context by domain")
 
-    p = sub.add_parser("list", help="List all knowledge entries")
+    p = sub.add_parser("compare", help="Compare two technologies using the knowledge base")
+    p.add_argument("a", help="First option (e.g. Kafka)")
+    p.add_argument("b", help="Second option (e.g. RabbitMQ)")
+    p.add_argument("--context", nargs="+", help="Context for the comparison")
+
+    p = sub.add_parser("list", help="List knowledge base entries")
     p.add_argument("--limit", type=int, default=20)
+
+    p = sub.add_parser("articles", help="List generated article files")
 
     p = sub.add_parser("search", help="Search the knowledge base")
     p.add_argument("query", nargs="+")
 
+    sub.add_parser("bot", help="Start the Telegram bot")
+
     args = parser.parse_args()
-    commands = {"ingest": cmd_ingest, "query": cmd_query, "list": cmd_list, "search": cmd_search}
-    commands[args.command](args)
+    {
+        "ingest": cmd_ingest,
+        "query": cmd_query,
+        "compare": cmd_compare,
+        "list": cmd_list,
+        "articles": cmd_articles,
+        "search": cmd_search,
+        "bot": cmd_bot,
+    }[args.command](args)
 
 
 if __name__ == "__main__":
