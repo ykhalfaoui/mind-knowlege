@@ -2,8 +2,6 @@ import json
 import sqlite3
 import uuid
 from datetime import datetime, timezone
-from pathlib import Path
-from typing import Optional
 
 from config import DB_PATH
 
@@ -13,14 +11,14 @@ def init_db() -> None:
     with _conn() as conn:
         conn.execute("""
             CREATE TABLE IF NOT EXISTS entries (
-                id          TEXT PRIMARY KEY,
-                title       TEXT NOT NULL,
-                source_url  TEXT,
-                type        TEXT,
-                domain      TEXT,
-                subdomain   TEXT,
-                tags        TEXT,
-                summary     TEXT,
+                id              TEXT PRIMARY KEY,
+                title           TEXT NOT NULL,
+                source_url      TEXT UNIQUE,
+                type            TEXT,
+                domain          TEXT,
+                subdomain       TEXT,
+                tags            TEXT,
+                summary         TEXT,
                 key_insights    TEXT,
                 qualification   TEXT,
                 recommended_for TEXT,
@@ -29,13 +27,24 @@ def init_db() -> None:
                 created_at      TEXT
             )
         """)
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_domain ON entries(domain)"
+        )
+
+
+def url_exists(url: str) -> bool:
+    with _conn() as conn:
+        row = conn.execute(
+            "SELECT id FROM entries WHERE source_url = ?", (url,)
+        ).fetchone()
+    return row is not None
 
 
 def save_entry(content: dict, classification: dict, research: dict = None) -> str:
     entry_id = str(uuid.uuid4())
     with _conn() as conn:
         conn.execute(
-            "INSERT INTO entries VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            "INSERT OR IGNORE INTO entries VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (
                 entry_id,
                 content.get("title", ""),
@@ -56,7 +65,9 @@ def save_entry(content: dict, classification: dict, research: dict = None) -> st
     return entry_id
 
 
-def search_entries(query: str = None, domain: str = None, limit: int = 10) -> list[dict]:
+def search_entries(
+    query: str = None, domain: str = None, limit: int = 10
+) -> list[dict]:
     with _conn() as conn:
         conn.row_factory = sqlite3.Row
         if domain:
@@ -87,14 +98,17 @@ def build_context(entries: list[dict]) -> str:
         research = json.loads(e.get("deep_research") or "{}")
         block = (
             f"## {e['title']}\n"
-            f"Domain: {e['domain']} / {e['subdomain']}\n"
+            f"Domain: {e['domain']} / {e.get('subdomain', '')}\n"
             f"Tags: {', '.join(tags)}\n"
             f"Summary: {e['summary']}\n"
-            f"Key Insights:\n" + "\n".join(f"  - {i}" for i in insights)
+            "Key Insights:\n" + "\n".join(f"  - {i}" for i in insights)
         )
         recs = research.get("architecture_recommendations", [])
         if recs:
-            block += "\nArchitecture Recommendations:\n" + "\n".join(f"  - {r}" for r in recs)
+            if isinstance(recs, list):
+                block += "\nArch Recommendations:\n" + "\n".join(f"  - {r}" for r in recs)
+            else:
+                block += f"\nArch Recommendations: {recs}"
         parts.append(block)
     return "\n\n---\n\n".join(parts)
 

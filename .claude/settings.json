@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "lia-knowledge": {
+      "command": "python",
+      "args": ["main.py", "serve"],
+      "env": {
+        "ANTHROPIC_API_KEY": "${ANTHROPIC_API_KEY}"
+      }
+    }
+  }
+}
